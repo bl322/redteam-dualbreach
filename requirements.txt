@@ -1,0 +1,6 @@
+# DualBreach 系统运行依赖
+# 离线演示（Mock Mode）只需要下面两个：
+fastapi>=0.110
+uvicorn>=0.27
+# 真实模型在线评测需要（OpenAI 兼容网关 / 百炼 / vLLM / One Hub 等均适用）
+openai>=1.0

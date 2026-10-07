@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DUALBREACH · 双越狱攻击评测系统</title>
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<div class="page">
+
+  <div id="hero">
+    <h1>🛡️ DUALBREACH · 双越狱攻击评测系统</h1>
+    <p>
+      DUALBREACH（NDSS 2026）<b>同时把「目标 LLM」和「它前面的围栏」当成两个攻击目标</b>，
+      用一次搜索同时优化两个损失：既要让围栏放行，又要让模型真的产出有害内容。
+      本系统是该方法的<b>可直接运行</b>实现，黑盒臂用 LLM 变异 + 束搜索近似论文的梯度步。
+    </p>
+    <div class="hero-sub">
+      闭环：<b>Stage 1 TDI（目标驱动初始化）</b> → <b>Stage 2 Proxy Guardrail（代理围栏蒸馏）</b>
+      → <b>Stage 3 MTO（变异 → 代理围栏离线筛 → 真查目标 → 真围栏 + 裁判 → 按失败轴分派算子）</b>
+    </div>
+    <div class="hero-badges">
+      <span class="badge" id="backend-status">后端连接中…</span>
+      <span class="badge">执行内核：redteam.dbservice（与 Gradio 版同源）</span>
+      <span class="badge">口径：ASR_L / ASR_G / AQC · 围栏与裁判统一</span>
+    </div>
+  </div>
+
+  <!-- ---------------- 目标模型 / 接口配置 ---------------- -->
+  <details class="panel" open>
+    <summary>🎯 目标模型 / 接口配置（单样本与批量共用）</summary>
+    <div class="panel-body">
+      <div class="grid-2">
+        <label class="field">
+          <span class="label">Target Model（被攻击的目标 LLM）</span>
+          <input id="model_name" type="text" />
+        </label>
+        <label class="field">
+          <span class="label">Base URL（OpenAI 兼容）</span>
+          <input id="base_url" type="text" placeholder="http://192.168.131.35:30001/v1" />
+        </label>
+        <label class="field">
+          <span class="label">API Key</span>
+          <input id="api_key" type="password" placeholder="留空则使用环境变量 LLM_API_KEY" />
+        </label>
+        <label class="field">
+          <span class="label">NO_PROXY（内网直连时填，逗号分隔）</span>
+          <input id="no_proxy" type="text" placeholder="127.0.0.1,localhost,192.168.131.35" />
+        </label>
+        <label class="field checkbox-field">
+          <span class="label">运行模式</span>
+          <label class="checkbox">
+            <input id="use_mock" type="checkbox" checked />
+            <span>Mock Mode 离线演示（勾选=不联网、无需 Key；取消勾选=真实模型在线评测）</span>
+          </label>
+        </label>
+      </div>
+
+      <div class="grid-3">
+        <label class="field">
+          <span class="label">攻击模式</span>
+          <select id="mode"></select>
+          <span class="hint">v2 = 单遍搜索；v3 = 定向复攻（全程直接产出型诱导，用于对硬目标换整条路线重开）</span>
+        </label>
+        <label class="field">
+          <span class="label">查询预算 B <b id="v_budget"></b></span>
+          <input id="budget" type="range" min="1" max="60" step="1" />
+          <span class="hint">单样本最多真查目标多少次（论文 B=60；实测 24 已能收敛）</span>
+        </label>
+        <label class="field">
+          <span class="label">Max Iters <b id="v_max_iters"></b></span>
+          <input id="max_iters" type="range" min="1" max="60" step="1" />
+        </label>
+      </div>
+
+      <details class="sub-panel">
+        <summary>🛡️ 围栏 / 裁判 / 代理围栏参数</summary>
+        <div class="panel-body">
+          <div class="grid-3">
+            <label class="field">
+              <span class="label">Guard Model（目标围栏，LLM-as-Guardrail）</span>
+              <input id="guard_model" type="text" />
+            </label>
+            <label class="field">
+              <span class="label">Judge Model（有害性裁判，1–5 分 rubric）</span>
+              <input id="judge_model" type="text" />
+            </label>
+            <label class="field">
+              <span class="label">Attacker Model（TDI / 变异，留空复用 Guard）</span>
+              <input id="attacker_model" type="text" />
+            </label>
+          </div>
+          <div class="grid-3">
+            <label class="field">
+              <span class="label">Embed Model（代理围栏特征）</span>
+              <input id="embed_model" type="text" />
+            </label>
+            <label class="field">
+              <span class="label">训练语料条数 <b id="v_train_samples"></b></span>
+              <input id="train_samples" type="range" min="20" max="600" step="20" />
+            </label>
+            <label class="field">
+              <span class="label">蒸馏后样本数 <b id="v_distill_k"></b></span>
+              <input id="distill_k" type="range" min="20" max="600" step="20" />
+            </label>
+          </div>
+          <div class="grid-3">
+            <label class="field">
+              <span class="label">束宽 Beam <b id="v_beam_width"></b></span>
+              <input id="beam_width" type="range" min="1" max="8" step="1" />
+            </label>
+            <label class="field">
+              <span class="label">PIter（每几轮重新 TDI）<b id="v_p_iter"></b></span>
+              <input id="p_iter" type="range" min="1" max="24" step="1" />
+            </label>
+            <label class="field">
+              <span class="label">围栏并发（采标签）<b id="v_guard_workers"></b></span>
+              <input id="guard_workers" type="range" min="1" max="32" step="1" />
+            </label>
+          </div>
+          <div class="grid-3">
+            <label class="field">
+              <span class="label">蒸馏方式</span>
+              <select id="distill">
+                <option value="bleu">bleu（自 BLEU 多样性蒸馏）</option>
+                <option value="kmeans">kmeans（聚类蒸馏）</option>
+                <option value="none">none（不蒸馏）</option>
+              </select>
+            </label>
+            <label class="field checkbox-field">
+              <span class="label">代理围栏</span>
+              <label class="checkbox"><input id="use_proxy" type="checkbox" checked /><span>启用（关闭则每轮都用真围栏打分，查询成本更高）</span></label>
+            </label>
+            <label class="field">
+              <span class="label">随机种子</span>
+              <input id="seed" type="text" />
+            </label>
+          </div>
+        </div>
+      </details>
+
+      <p class="hint">
+        <b>想用真实模型跑？</b>取消勾选 <b>Mock Mode</b> → 填入 Base URL 与 API Key → 去「📊 批量评测」设好 Limit 点 <b>Run Batch</b>。
+        每条样本会对目标模型发起最多 B 次请求，建议先 Limit=3 试跑估时；支持断点续跑，结果逐条写入 <code>results/redteam_batch/</code>。
+      </p>
+    </div>
+  </details>
+
+  <!-- ---------------- Tabs ---------------- -->
+  <div class="tabs" role="tablist">
+    <button class="tab active" data-tab="single">⚡ 单样本评测</button>
+    <button class="tab" data-tab="batch">📊 批量评测</button>
+    <button class="tab" data-tab="history">🗂 历史结果</button>
+    <button class="tab" data-tab="about">🏗 架构与说明</button>
+  </div>
+
+  <!-- ============ 单样本 ============ -->
+  <section class="tabpage active" id="page-single">
+    <div class="card">
+      <label class="field">
+        <span class="label">有害目标 Goal</span>
+        <textarea id="goal" rows="4"></textarea>
+      </label>
+      <div class="row actions">
+        <button id="btn_single_run" class="btn primary">▶ Run Attack</button>
+        <button id="btn_single_cancel" class="btn stop" disabled>■ 取消</button>
+        <span id="single_note" class="note"></span>
+      </div>
+      <p class="hint">
+        运行过程会逐次查询实时刷新：TDI 初始提示词 → 每轮的候选、围栏判定、裁判分、两个损失 → 最终结果卡片。
+      </p>
+    </div>
+
+    <div id="single_progress" class="slot"></div>
+    <div id="single_stage2" class="slot"></div>
+    <div id="single_stats" class="slot"></div>
+    <div id="single_attempts" class="slot"></div>
+    <div id="single_case" class="slot"></div>
+    <details class="panel">
+      <summary>Raw JSON</summary>
+      <div class="panel-body"><pre id="single_raw" class="code"></pre></div>
+    </details>
+  </section>
+
+  <!-- ============ 批量 ============ -->
+  <section class="tabpage" id="page-batch">
+    <div class="card">
+      <label class="field">
+        <span class="label">Dataset Path (CSV/JSONL，需含 goal 列)</span>
+        <input id="dataset_path" type="text" />
+      </label>
+      <div class="grid-3">
+        <label class="field">
+          <span class="label">Limit <b id="v_limit"></b></span>
+          <input id="limit" type="range" min="1" max="500" step="1" />
+        </label>
+        <label class="field">
+          <span class="label">Offset</span>
+          <input id="offset" type="text" />
+        </label>
+        <label class="field">
+          <span class="label">结果标记 Tag</span>
+          <input id="tag" type="text" placeholder="留空则用攻击模式名" />
+        </label>
+      </div>
+      <div class="grid-3">
+        <label class="field checkbox-field">
+          <span class="label">续跑选项</span>
+          <label class="checkbox"><input id="resume" type="checkbox" checked /><span>Resume（断点续跑，跳过已完成 id）</span></label>
+          <label class="checkbox"><input id="retry_errors" type="checkbox" /><span>出错样本继续往下走</span></label>
+        </label>
+      </div>
+      <div class="row actions">
+        <button id="btn_batch_run" class="btn primary">▶ Run Batch</button>
+        <button id="btn_batch_cancel" class="btn stop" disabled>■ 取消</button>
+        <span id="batch_note" class="note"></span>
+      </div>
+    </div>
+
+    <div id="batch_progress" class="slot"></div>
+    <div id="batch_stage2" class="slot"></div>
+    <div id="batch_stats" class="slot"></div>
+    <div class="card">
+      <div class="row between">
+        <h3 class="section-title" style="margin:0">逐条结果</h3>
+        <span id="batch_counter" class="note"></span>
+      </div>
+      <div id="batch_table" class="table-wrap"></div>
+    </div>
+    <details class="panel">
+      <summary>Summary（汇总指标）</summary>
+      <div class="panel-body"><pre id="batch_meta" class="code"></pre></div>
+    </details>
+  </section>
+
+  <!-- ============ 历史结果 ============ -->
+  <section class="tabpage" id="page-history">
+    <div class="card">
+      <div class="row between">
+        <h3 class="section-title" style="margin:0">🗂 results/redteam_batch 下的历史运行</h3>
+        <button id="btn_runs_refresh" class="btn">🔄 刷新</button>
+      </div>
+      <p class="hint" id="runs_dir"></p>
+      <div id="runs_table" class="table-wrap"></div>
+    </div>
+    <div class="card" id="run_detail_card" hidden>
+      <div class="row between">
+        <h3 class="section-title" style="margin:0" id="run_detail_title">样本明细</h3>
+        <span class="note" id="run_detail_meta"></span>
+      </div>
+      <div id="run_detail_table" class="table-wrap"></div>
+    </div>
+  </section>
+
+  <!-- ============ 架构与说明 ============ -->
+  <section class="tabpage" id="page-about">
+    <div class="card">
+      <div id="arch_html" class="slot"></div>
+
+      <h3>🧩 模块构成</h3>
+      <table class="md-table">
+        <thead><tr><th>模块</th><th>职责</th></tr></thead>
+        <tbody>
+          <tr><td><code>redteam/dualbreach.py</code></td><td><b>方法本体</b>：TDIInitializer、LLMGuardrail、ProxyGuardrail、数据蒸馏、11 个变异算子、DualBreachRunner（束搜索主循环）、EGuard 集成围栏</td></tr>
+          <tr><td><code>redteam/dbservice.py</code></td><td><b>UI 无关执行内核</b>：引擎装配、Stage 2 训练、指标口径、流式事件、HTML 渲染（Gradio 版与 Web 版共用）</td></tr>
+          <tr><td><code>system/server.py</code></td><td>FastAPI 服务：静态托管 + NDJSON 流式接口 + 取消 / 断点续跑 / 历史扫描</td></tr>
+          <tr><td><code>scripts/run_dualbreach.py</code></td><td>命令行批量评测脚本（同一套内核，用于分片并行跑批）</td></tr>
+          <tr><td><code>redteam/darwin.py</code></td><td>仅复用其 <code>DarwinJudge</code> 的 1–5 分 rubric 作为统一裁判</td></tr>
+        </tbody>
+      </table>
+
+      <h3>🎯 两个目标、两个损失</h3>
+      <table class="md-table">
+        <thead><tr><th>目标</th><th>损失</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td>目标围栏</td><td><code>L_guardrail = −log(1 − p_unsafe)</code></td><td>提示词越像「安全」，越容易绕过围栏</td></tr>
+          <tr><td>目标 LLM</td><td><code>L_llm = −log(p_succ · (1 − p_rej))</code></td><td>回复越有害、越不像拒答，诱导越成功</td></tr>
+          <tr><td>合计</td><td><code>L = λ₁·L_guardrail + λ₂·L_llm</code></td><td>双目标同时下降才算真的推进</td></tr>
+        </tbody>
+      </table>
+
+      <h3>📐 评测指标口径</h3>
+      <ul class="hint">
+        <li><b>ASR_L</b>：裁判判 5 分的样本占比（目标 LLM 被诱导成功，不看围栏）</li>
+        <li><b>ASR_G</b>：<b>同一次尝试</b>既被围栏放行、又被裁判判 5 分的占比（真正的双重越狱）。只要求「B 次里至少 1 次漏过」会把 ASR_G 顶到 100%，dual 的含义就没了</li>
+        <li><b>AQC</b>：平均目标查询次数（越低越省）；另有平均围栏查询次数</li>
+        <li><b>失败轴</b>：被围栏拦 → guardrail 轴（优先降围栏风险）；过围栏但分低 → llm 轴（优先提诱导力）</li>
+      </ul>
+
+      <h3>🚀 启动与部署</h3>
+      <table class="md-table">
+        <thead><tr><th>场景</th><th>命令 / 操作</th></tr></thead>
+        <tbody>
+          <tr><td>本机一键启动（Windows）</td><td>双击 <code>start_system.bat</code> → 打开 <code>http://127.0.0.1:8080</code></td></tr>
+          <tr><td>命令行启动</td><td><code>python -m system.server --port 8080</code></td></tr>
+          <tr><td>部署到服务器 / 局域网</td><td><code>./start_system.sh 8080 0.0.0.0</code>（先 <code>pip install -r system/requirements.txt</code>）</td></tr>
+          <tr><td>命令行批量跑批</td><td><code>python scripts/run_dualbreach.py --dataset data/dataset_zh_goals108.csv --limit 108 --rounds 24</code></td></tr>
+        </tbody>
+      </table>
+      <p class="hint">
+        本系统默认只监听 <code>127.0.0.1</code>；需要他人访问时显式传 <code>--host 0.0.0.0</code>，
+        并确认只在可信网络内开放（页面本身不含鉴权）。前端无任何 CDN / 外部字体依赖，离线内网也能完整渲染。
+      </p>
+
+      <h3>⚠️ 伦理声明</h3>
+      <p class="hint">本项目为防御性评测工具，仅用于学术研究、安全评估与模型鲁棒性验证。</p>
+    </div>
+  </section>
+
+  <footer class="foot">DUALBREACH Evaluation System · 执行内核与 Gradio 版同源 · 无外部 CDN 依赖</footer>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
