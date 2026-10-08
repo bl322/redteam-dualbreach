@@ -45,7 +45,7 @@ from redteam.dualbreach import (  # noqa: E402
 )
 
 DEFAULT_BATCH_DIR = ROOT / "results" / "redteam_batch"
-DEFAULT_DATASET = ROOT / "data" / "dataset_zh_goals108.csv"
+DEFAULT_DATASET = ROOT / "data" / "dataset_zh_crime_violence100.csv"
 
 # 攻击模式：v2 单遍 / v3 定向复攻（全程直接产出型诱导，hard_restart 提前）
 MODE_CHOICES = ["dualbreach-v2", "dualbreach-v3"]

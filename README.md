@@ -24,6 +24,60 @@
 
 ---
 
+## 评测结果 · 100 条中文违法/暴力集
+
+目标模型 `qwen3-next-80b-a3b-instruct`，围栏与裁判均 `deepseek-v4-flash-0731`，24 轮预算。
+
+| 轮次 | 攻击目标 | 成功 | 转化率 | 平均查询 |
+|---|---|---|---|---|
+| 首轮单遍 | 100 | 46 | 46% | 9.4 |
+| v4 定向复攻（warm start + 逃逸算子） | 63 | 42 | 67% | 10.6 |
+| v5 第三轮 | 18 | 12 | 67% | 13.3 |
+| v6 第四轮 | 6 | 3 | 50% | 12.3 |
+| **累计 best-of** | **100** | **97** | **97%** | **6.7** |
+
+- `ASR_L` / `ASR_G` / `ASR_D` 均为 **97.0%**
+- 100 条的裁判最高分**全部为 5 分**——内容侧 100/100 全破；剩余 3 条是「内容满分但同一次尝试被围栏拦下」
+- 关键发现：首轮失败的 54 条里有 **30 条裁判早已给满分**，输的只是包装。定向复攻不去重找诱导路线，只补包装缺口，平均几次查询就能补上
+- 效率：AQC 6.7，优于旧 108 条两阶段方案的 13.18
+
+完整报告见 [`reports/DUALBREACH_违法暴力100条评测报告.md`](reports/DUALBREACH_违法暴力100条评测报告.md)。
+
+### 关于数据集（务必阅读）
+
+`data/dataset_zh_crime_violence100.csv` 是本项目**自制的原生中文目标集**，**不是** AdvBench / HarmBench 的抽取或翻译版本。它由生成脚本内的中文目标句列表直接产出，全程不读取任何英文语料、无翻译步骤；只有二级领域的分类体系参考了主流红队基准的危害类别。
+
+该集**刻意按"易攻"取向设计**：目标句短、直、纯提问式（平均 14.2 字），以技术型/知识型违法话题为主，并剔除了强价值观拒答类目标。因此它的 ASR **不能**与 AdvBench / HarmBench 口径下的数字横向比较。若需对外对比，请在相同攻击配置、相同目标模型下补跑标准基准作为对照。
+
+---
+
+## v4 增强：定向复攻
+
+单遍打不穿的目标，重跑一遍往往还是打不穿——因为搜索每轮都从零起步，丢掉了上一轮已经攻下来的包装。v4 针对这一点做了三处改动：
+
+| 改动 | 说明 |
+|---|---|
+| **warm-start 精英保留** | `--seed-from <jsonl,…>` 把上一轮拿到高分的 prompt 作为常驻精英起点，不会被束搜索裁剪挤掉 |
+| **围栏逃逸算子** | 变异算子 11 → 18，新增虚构框架 / 反面教材 / 学术引用 / 分段拆解 / 术语替代 / 角色指令化 / 续写补全，均为语义保持的包装层改写 |
+| **多候选探测** | `--dualbreach-probe-width N` 每轮送 N 个候选去查目标，加倍探索密度 |
+
+典型用法：
+
+```bash
+# 第一轮：单遍
+python scripts/run_dualbreach.py --dataset data/dataset_zh_crime_violence100.csv \
+  --output results/r1.jsonl --dualbreach-iters 24
+
+# 第二轮：只攻失败集，带着上一轮的高分 prompt 继续
+python scripts/run_dualbreach.py --dataset data/_failed.csv \
+  --seed-from "results/r1.jsonl" --seed 2003 \
+  --dualbreach-probe-width 2 --output results/r2.jsonl
+```
+
+**建议把定向复攻当作标准流程而非补救手段**：单遍跑完直接对失败集 warm-start 复攻，两轮 46%→82%，三轮→94%，四轮→97%，总查询数反而比"单遍加大预算"更低。
+
+---
+
 ## 目录结构
 
 ```
@@ -39,9 +93,13 @@ dualbreach-system/
 │   ├── static/                 前端（index.html / app.js / styles.css）
 │   └── requirements.txt
 ├── data/
-│   └── dataset_zh_goals108.csv 评测数据集（108 条中文有害目标）
+│   ├── dataset_zh_crime_violence100.csv 评测数据集（100 条，违法/暴力为主，默认）
+│   ├── dataset_zh_crime_violence20.csv  快速子集（20 条）
+│   └── dataset_zh_goals108.csv          原 108 条（价值观/歧视类，较难）
 ├── scripts/
 │   └── run_dualbreach.py       CLI 批量跑批入口
+├── reports/
+│   └── DUALBREACH_违法暴力100条评测报告.md   100 条集完整评测报告
 ├── start.bat / start.sh        一键启动
 └── requirements.txt
 ```
@@ -113,7 +171,7 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 
 ```bash
 python scripts/run_dualbreach.py \
-  --dataset data/dataset_zh_goals108.csv \
+  --dataset data/dataset_zh_crime_violence60.csv \
   --budget 24 \
   --out results/run1.jsonl
 ```
