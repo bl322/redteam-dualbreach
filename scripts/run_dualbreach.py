@@ -69,12 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dualbreach-hard-restart", type=int, default=None,
                    help="连续诱导失败多少轮后换直接产出型模板重开（默认 8；v3 建议 3）")
     p.add_argument("--dualbreach-probe-width", type=int, default=1,
-                   help="v4：每轮送去查目标的候选数（默认 1；>1 加倍探索、也加倍查询）")
+                   help="每轮送去查目标的候选数（默认 1；>1 加倍探索、也加倍查询）")
     p.add_argument("--seed", type=int, default=42,
                    help="搜索随机种子。同一目标换不同种子 = 一次独立重启，"
                         "用于多起点复攻（best-of-N restarts）")
     p.add_argument("--seed-from", type=Path, default=None,
-                   help="v4：定向复攻。传上一轮结果 jsonl，为每条目标取其历史高分 prompt "
+                   help="定向复攻。传上一轮结果 jsonl，为每条目标取其历史高分 prompt "
                         "作为常驻精英起点，跳过「重新找一个能诱导成功的包装」的开销")
     p.add_argument("--output", type=Path, default=None, help="输出 jsonl 路径")
     p.add_argument("--resume", action="store_true", help="已有结果则跳过已完成的样本")

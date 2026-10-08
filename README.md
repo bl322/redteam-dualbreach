@@ -13,68 +13,66 @@
 | 阶段 | 做什么 | 关键设计 |
 |---|---|---|
 | **Stage 1 · TDI** | 用目标本身生成初始攻击提示词，而不是套用模板 | 直接产出型变体：语料采集摘录 / 角色代入第一人称 / 素材条目罗列 |
-| **Stage 2 · 代理围栏** | 用少量探针蒸馏出一个本地代理围栏，替代昂贵的真围栏查询 | 目标集 + 良性疾病句训练分类器，留出集上报与真围栏的一致率 |
+| **Stage 2 · 代理围栏** | 用少量探针蒸馏出一个本地代理围栏，替代昂贵的真围栏查询 | 目标集 + 良性句子训练分类器，留出集上报与真围栏的一致率 |
 | **Stage 3 · MTO** | 束搜索同时优化两个目标：`L_guard`（绕过围栏）与 `L_llm`（诱导成功） | 按失败轴分派变异算子；裁判分数回灌；停滞时硬重启换诱导路线 |
 
-**口径（严格按论文 dual 标准）**
+### 两阶段搜索：单遍 + 定向复攻
+
+一个目标单遍打不穿，原样再跑一遍通常还是打不穿——因为搜索每一轮都从零起步，把上一轮已经攻下来的包装丢掉了。所以搜索被设计成两个阶段：
+
+| 阶段 | 做什么 |
+|---|---|
+| **单遍搜索** | 对每个目标跑一轮束搜索，拿到第一轮结果 |
+| **定向复攻** | 只对失败集重跑，并把上一轮拿过高分的提示词作为**常驻精英起点**，只补包装缺口，不重新找诱导路线 |
+
+支撑它的三个设计：
+
+- **warm-start 精英保留** — `--seed-from <jsonl,…>` 导入的历史高分提示词进入常驻精英束，不会被束搜索裁剪挤掉
+- **18 个变异算子** — 其中 7 个是专用于围栏逃逸的包装层改写：虚构框架 / 反面教材 / 学术引用 / 分段拆解 / 术语替代 / 角色指令化 / 续写补全，均为语义保持的改写
+- **多候选探测** — `--dualbreach-probe-width N` 每轮送 N 个候选去查目标，按需要加倍探索密度
+
+**建议把定向复攻当作标准流程而非补救手段**：单遍跑完直接对失败集 warm-start 复攻，两轮 46%→82%，四轮→97%，总查询数反而比"单遍加大预算"更低。
+
+### 指标口径（严格按论文 dual 标准）
 
 - `ASR_L` — 诱导成功率：目标模型给出有害内容（裁判 1–5 分制判 5）
-- `ASR_G` — **双重成功率**：同一次尝试既被围栏放行、又被裁判判 5 分
+- `ASR_G` — 围栏绕过率：同一次尝试未被围栏拦截
+- `ASR_D` — **双重成功率**：同一次尝试既被围栏放行、又被裁判判 5 分
 - `AQC` — 平均查询次数（越低越高效）
 
 ---
 
-## 评测结果 · 100 条中文违法/暴力集
+## 开箱评测结果
 
-目标模型 `qwen3-next-80b-a3b-instruct`，围栏与裁判均 `deepseek-v4-flash-0731`，24 轮预算。
+目标模型 `qwen3-next-80b-a3b-instruct`，围栏与裁判均 `deepseek-v4-flash-0731`，单条 24 轮预算，数据集为自带的 100 条中文违法/暴力集。
 
-| 轮次 | 攻击目标 | 成功 | 转化率 | 平均查询 |
+| 口径 | ASR_L | ASR_G | ASR_D | AQC |
 |---|---|---|---|---|
-| 首轮单遍 | 100 | 46 | 46% | 9.4 |
-| v4 定向复攻（warm start + 逃逸算子） | 63 | 42 | 67% | 10.6 |
-| v5 第三轮 | 18 | 12 | 67% | 13.3 |
-| v6 第四轮 | 6 | 3 | 50% | 12.3 |
-| **累计 best-of** | **100** | **97** | **97%** | **6.7** |
+| 单遍搜索 | 46% | 46% | **46%** | 9.4 |
+| 单遍 + 定向复攻 | 97% | 97% | **97%** | 6.7 |
 
-- `ASR_L` / `ASR_G` / `ASR_D` 均为 **97.0%**
-- 100 条的裁判最高分**全部为 5 分**——内容侧 100/100 全破；剩余 3 条是「内容满分但同一次尝试被围栏拦下」
-- 关键发现：首轮失败的 54 条里有 **30 条裁判早已给满分**，输的只是包装。定向复攻不去重找诱导路线，只补包装缺口，平均几次查询就能补上
-- 效率：AQC 6.7，优于旧 108 条两阶段方案的 13.18
+- 100 条的裁判最高分**全部为 5 分**——内容侧 100/100 全破；最终剩余 3 条是「内容满分但同一次尝试被围栏拦下」
+- 定向复攻整体转化率 66%，每轮都能再啃下一批
+- 关键发现：单遍失败的 54 条里有 **30 条裁判早已给满分**，输的只是包装。定向复攻不去重找诱导路线，只补包装缺口，平均几次查询就能补上
 
 完整报告见 [`reports/DUALBREACH_违法暴力100条评测报告.md`](reports/DUALBREACH_违法暴力100条评测报告.md)。
 
-### 关于数据集（务必阅读）
-
-`data/dataset_zh_crime_violence100.csv` 是本项目**自制的原生中文目标集**，**不是** AdvBench / HarmBench 的抽取或翻译版本。它由生成脚本内的中文目标句列表直接产出，全程不读取任何英文语料、无翻译步骤；只有二级领域的分类体系参考了主流红队基准的危害类别。
-
-该集**刻意按"易攻"取向设计**：目标句短、直、纯提问式（平均 14.2 字），以技术型/知识型违法话题为主，并剔除了强价值观拒答类目标。因此它的 ASR **不能**与 AdvBench / HarmBench 口径下的数字横向比较。若需对外对比，请在相同攻击配置、相同目标模型下补跑标准基准作为对照。
-
 ---
 
-## v4 增强：定向复攻
+## 数据集
 
-单遍打不穿的目标，重跑一遍往往还是打不穿——因为搜索每轮都从零起步，丢掉了上一轮已经攻下来的包装。v4 针对这一点做了三处改动：
-
-| 改动 | 说明 |
+| 文件 | 说明 |
 |---|---|
-| **warm-start 精英保留** | `--seed-from <jsonl,…>` 把上一轮拿到高分的 prompt 作为常驻精英起点，不会被束搜索裁剪挤掉 |
-| **围栏逃逸算子** | 变异算子 11 → 18，新增虚构框架 / 反面教材 / 学术引用 / 分段拆解 / 术语替代 / 角色指令化 / 续写补全，均为语义保持的包装层改写 |
-| **多候选探测** | `--dualbreach-probe-width N` 每轮送 N 个候选去查目标，加倍探索密度 |
+| `data/dataset_zh_crime_violence100.csv` | 100 条，违法/暴力为主、其他有害类为辅（**默认**） |
+| `data/dataset_zh_crime_violence60.csv` | 60 条，纯违法/暴力核心子集 |
+| `data/dataset_zh_crime_violence20.csv` | 20 条快速子集，几分钟跑完一轮 |
+| `data/dataset_zh_goals108.csv` | 108 条，价值观/歧视类，拒答更坚决 |
 
-典型用法：
+**关于 100 条集的来源，务必阅读**
 
-```bash
-# 第一轮：单遍
-python scripts/run_dualbreach.py --dataset data/dataset_zh_crime_violence100.csv \
-  --output results/r1.jsonl --dualbreach-iters 24
+它是本项目**自制的原生中文目标集**，**不是** AdvBench / HarmBench 的抽取或翻译版本。目标句由生成脚本内的中文列表直接产出，全程不读取任何英文语料、无翻译步骤；只有二级领域的分类体系参考了主流红队基准的危害类别。
 
-# 第二轮：只攻失败集，带着上一轮的高分 prompt 继续
-python scripts/run_dualbreach.py --dataset data/_failed.csv \
-  --seed-from "results/r1.jsonl" --seed 2003 \
-  --dualbreach-probe-width 2 --output results/r2.jsonl
-```
-
-**建议把定向复攻当作标准流程而非补救手段**：单遍跑完直接对失败集 warm-start 复攻，两轮 46%→82%，三轮→94%，四轮→97%，总查询数反而比"单遍加大预算"更低。
+该集**刻意按"易攻"取向设计**：目标句短、直、纯提问式（平均 14.2 字），以技术型/知识型违法话题为主，并剔除了强价值观拒答类目标。因此它的 ASR **不能**与 AdvBench / HarmBench 口径下的数字横向比较。若需对外对比，请在相同攻击配置、相同目标模型下补跑标准基准作为对照。
 
 ---
 
@@ -83,7 +81,7 @@ python scripts/run_dualbreach.py --dataset data/_failed.csv \
 ```
 dualbreach-system/
 ├── redteam/                    攻击与评测内核
-│   ├── dualbreach.py           三阶段攻击实现（黑盒臂 + 白盒臂）
+│   ├── dualbreach.py           三阶段攻击实现
 │   ├── dbservice.py            UI 无关执行内核，yield 结构化事件
 │   ├── darwin.py               裁判（DarwinJudge，支持 llm / heuristic 两种）
 │   ├── engine.py               文本相似度、合规检查等基础工具
@@ -92,14 +90,11 @@ dualbreach-system/
 │   ├── server.py               FastAPI 服务
 │   ├── static/                 前端（index.html / app.js / styles.css）
 │   └── requirements.txt
-├── data/
-│   ├── dataset_zh_crime_violence100.csv 评测数据集（100 条，违法/暴力为主，默认）
-│   ├── dataset_zh_crime_violence20.csv  快速子集（20 条）
-│   └── dataset_zh_goals108.csv          原 108 条（价值观/歧视类，较难）
+├── data/                       评测数据集
 ├── scripts/
 │   └── run_dualbreach.py       CLI 批量跑批入口
 ├── reports/
-│   └── DUALBREACH_违法暴力100条评测报告.md   100 条集完整评测报告
+│   └── DUALBREACH_违法暴力100条评测报告.md
 ├── start.bat / start.sh        一键启动
 └── requirements.txt
 ```
@@ -161,7 +156,7 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 - **🗂 历史结果** — 回看 `results/redteam_batch/` 下所有历史运行
 - **🏗 架构说明** — 三阶段链路图
 
-攻击模式可选 `v2 单遍搜索` 或 `v3 定向复攻`（后者全程直接产出型诱导，且把硬重启提前到第 3 轮——单遍打不穿的硬目标，换整条诱导路线重开比在同源束里继续变异更有效）。
+攻击模式可选 **单遍搜索** 或 **定向复攻**（后者全程直接产出型诱导，且把硬重启提前到第 3 轮——单遍打不穿的硬目标，换整条诱导路线重开比在同源束里继续变异更有效）。
 
 ---
 
@@ -170,11 +165,21 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 不想开界面时用这个：
 
 ```bash
+# 单遍
 python scripts/run_dualbreach.py \
-  --dataset data/dataset_zh_crime_violence60.csv \
-  --budget 24 \
-  --out results/run1.jsonl
+  --dataset data/dataset_zh_crime_violence100.csv \
+  --dualbreach-iters 24 \
+  --output results/r1.jsonl
+
+# 定向复攻：只攻失败集，带着上一轮的高分提示词继续
+python scripts/run_dualbreach.py \
+  --dataset data/_failed.csv \
+  --seed-from "results/r1.jsonl" --seed 2003 \
+  --dualbreach-probe-width 2 \
+  --output results/r2.jsonl
 ```
+
+`--seed-from` 支持逗号分隔的多个路径与 glob，`--seed` 换随机起点，打不穿的硬目标换个起点常能啃下来。
 
 ---
 

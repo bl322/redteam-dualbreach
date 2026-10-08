@@ -53,7 +53,7 @@
       });
       var sel = $("mode");
       sel.innerHTML = m.mode_choices.map(function (c) {
-        var label = c === "dualbreach-v2" ? "dualbreach-v2 · 单遍搜索" : "dualbreach-v3 · 定向复攻（直接产出型诱导）";
+        var label = c === "dualbreach-v2" ? "单遍搜索" : "定向复攻（直接产出型诱导）";
         return '<option value="' + c + '">' + label + "</option>";
       }).join("");
       sel.value = d.mode;
